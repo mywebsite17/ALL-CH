@@ -48,7 +48,7 @@
       border-bottom: 1px solid #000;
     }
     .aplr-menu::-webkit-scrollbar { height: 0; display: none; } /* إخفاء شريط التمرير لشكل أنضف */
-    .aplr-menu li { display: flex; align-items: stretch; height: 100%; }
+    .aplr-menu li { display: flex; align-items: stretch; height: 100%; transition: opacity 0.2s; }
 
     #menu-btn, .aplr-link {
       background: #4b197b; border: 1px solid #222; border-top: none; border-bottom: none; border-radius: 0;
@@ -159,6 +159,22 @@
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('./sw.js?v=v1782108570307')
+            .then(reg => console.log('SW Registered'))
+            .catch(err => console.log('SW Failed', err));
+        });
+      }
+    </script>
+
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <link rel="manifest" href="./manifest.json?v=v1782530392145">
+    <meta name="theme-color" content="#6c64ce">
+    <link rel="apple-touch-icon" href="./icon-192.png?v=v1782530392145">
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('./sw.js?v=v1782530392145')
             .then(reg => console.log('SW Registered'))
             .catch(err => console.log('SW Failed', err));
         });
@@ -323,6 +339,9 @@
   </div>
 
   <script>
+    // متغير عام لوضع التعديل بالرقم السري
+    window.isEditMode = false;
+
     // 1. سكريبت الحماية القصوى لمنع الإعلانات والنوافذ المنبثقة والصفحات الخارجية نهائياً
     (function () {
       function _noop() { return null; }
@@ -392,7 +411,7 @@
       document.addEventListener('webkitfullscreenchange', updateBtn);
     })();
 
-    // 3. نظام القنوات، المجلدات، التعديل، الحذف، الاستيراد، والتصدير + Firebase
+    // 3. نظام القنوات، المجلدات، التعديل، الحذف، الاستيراد، والتصدير + Firebase + حفظ الـ HTML الديناميكي
     (function() {
       // إعداد الفايربيس
       const firebaseConfig = {
@@ -441,7 +460,8 @@
         }
       };
       
-      let db = JSON.parse(localStorage.getItem('myPlayerDB')) || defaultData;
+      // الحقن العكسي لقاعدة البيانات عشان لو حملت الـ HTML يشتغل بنفس القنوات الاوفلاين
+      let db = window.__INJECTED_DB__ || JSON.parse(localStorage.getItem('myPlayerDB')) || defaultData;
       window.db = db;
 
       if(!db.folders) db.folders = defaultData.folders;
@@ -796,10 +816,14 @@
         event.target.value = ''; 
       };
 
-      // === كود حفظ صفحة الـ HTML بالكامل ===
+      // === كود حفظ صفحة الـ HTML بالكامل مع الحقن العكسي لقاعدة البيانات ===
       document.getElementById('btn-save-file').onclick = () => {
-        const htmlContent = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
-        const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
+        var htmlString = document.documentElement.outerHTML;
+        // حقن الداتا داخل الملف عشان يشتغل اوفلاين بنفس البيانات لو السيرفر مش موجود
+        var injectedScript = "<script>window.__INJECTED_DB__ = " + JSON.stringify(db) + ";<\/script>";
+        htmlString = "<!DOCTYPE html>\n" + htmlString.replace('<head>', '<head>\n  ' + injectedScript);
+        
+        const blob = new Blob([htmlString], { type: "text/html;charset=utf-8" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = "My_Player_Backup.html";
@@ -809,7 +833,10 @@
         URL.revokeObjectURL(a.href);
       };
 
-      // بناء قائمة الشريط العلوي من الفايربيس
+      // المتغيرات المطلوبة للـ Drag and Drop
+      let draggedItemIndex = null;
+
+      // بناء قائمة الشريط العلوي من الفايربيس (مع دعم التعديل والسحب والإفلات)
       window.renderTopBar = function() {
         var menu = document.querySelector('.aplr-menu');
         if(!menu) return;
@@ -818,8 +845,19 @@
         var dynamicItems = menu.querySelectorAll('li:not(.static-item)');
         dynamicItems.forEach(item => item.remove());
 
-        db.topBarChannels.forEach(function(ch) {
+        db.topBarChannels.forEach(function(ch, index) {
             var li = document.createElement('li');
+            li.setAttribute('data-index', index);
+            
+            // تغيير شكل الماوس والإطار إذا كان في وضع التعديل
+            if (window.isEditMode) {
+                li.style.cursor = 'move';
+                li.style.borderBottom = '2px dashed #f1c40f';
+            } else {
+                li.style.cursor = 'default';
+                li.style.borderBottom = 'none';
+            }
+
             var a = document.createElement('a');
             a.className = 'aplr-link';
             a.href = ch.url;
@@ -827,12 +865,37 @@
             a.innerText = ch.name;
             
             var player = document.getElementById('player');
-            if (player && player.src === ch.url) {
+            if (player && player.src === ch.url && !window.isEditMode) {
                 a.classList.add('active');
             }
 
+            // حدث الضغط على القناة
             a.addEventListener('click', function(e) {
                 e.preventDefault();
+                
+                // لو وضع التعديل مفعل، افتح قائمة التعديل والحذف
+                if (window.isEditMode) {
+                    let action = prompt("القناة: " + ch.name + "\nاختر الإجراء:\n1- تعديل الاسم أو الرابط\n2- حذف القناة\n(اضغط إلغاء للرجوع)");
+                    if (action === '1') {
+                        let newName = prompt("أدخل الاسم الجديد:", ch.name);
+                        let newUrl = prompt("أدخل الرابط الجديد:", ch.url);
+                        if (newName && newUrl) {
+                            ch.name = newName; 
+                            ch.url = newUrl;
+                            if(window.saveDB) window.saveDB();
+                            if(window.renderTopBar) window.renderTopBar();
+                        }
+                    } else if (action === '2') {
+                        if (confirm("تأكيد حذف القناة: " + ch.name + " ؟")) {
+                            db.topBarChannels.splice(index, 1);
+                            if(window.saveDB) window.saveDB();
+                            if(window.renderTopBar) window.renderTopBar();
+                        }
+                    }
+                    return;
+                }
+
+                // لو وضع التشغيل العادي
                 var playerIframe = document.getElementById('player');
                 if(playerIframe) playerIframe.src = this.href;
                 var serverLinks = document.querySelectorAll('.aplr-menu .aplr-link[role="button"]:not(#dashboard-btn)');
@@ -840,6 +903,41 @@
                 this.classList.add('active');
             });
             
+            // إضافة قدرات السحب والإفلات (Drag & Drop)
+            li.draggable = window.isEditMode;
+            li.addEventListener('dragstart', function(e) {
+                if(!window.isEditMode) { e.preventDefault(); return; }
+                draggedItemIndex = index;
+                e.dataTransfer.effectAllowed = 'move';
+                setTimeout(() => li.style.opacity = '0.5', 0);
+            });
+            li.addEventListener('dragend', function() {
+                li.style.opacity = '1';
+                draggedItemIndex = null;
+                document.querySelectorAll('.aplr-menu li').forEach(el => el.style.borderRight = 'none');
+            });
+            li.addEventListener('dragover', function(e) {
+                if(!window.isEditMode) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                li.style.borderRight = '3px solid #e50914'; // خط أحمر لتوضيح مكان الإسقاط
+            });
+            li.addEventListener('dragleave', function() {
+                li.style.borderRight = 'none';
+            });
+            li.addEventListener('drop', function(e) {
+                if(!window.isEditMode) return;
+                e.stopPropagation();
+                li.style.borderRight = 'none';
+                if (draggedItemIndex !== null && draggedItemIndex !== index) {
+                    // سحب القناة وإدراجها في المكان الجديد
+                    let draggedItem = db.topBarChannels.splice(draggedItemIndex, 1)[0];
+                    db.topBarChannels.splice(index, 0, draggedItem);
+                    if(window.saveDB) window.saveDB();
+                    window.renderTopBar();
+                }
+            });
+
             li.appendChild(a);
             menu.appendChild(li);
         });
@@ -1047,8 +1145,32 @@
         }
     }
 
+    // تفعيل وضع التعديل (بالباسورد)
     function toggleEditMode() {
-        alert('وضع التعديل مفعل بالفعل (يمكنك تعديل القنوات وحذفها من القائمة الجانبية).');
+        var btn = document.getElementById('btn-edit-mode');
+        
+        if (!window.isEditMode) {
+            var pass = prompt("الرجاء إدخال كلمة المرور لتفعيل السحب والإفلات والتعديل:");
+            if (pass === "#ZMsd42d*") {
+                window.isEditMode = true;
+                alert("تم تفعيل وضع التعديل!\nيمكنك الآن سحب القنوات في الشريط العلوي لترتيبها، أو الضغط عليها لحذفها/تعديلها.");
+                if(btn) {
+                    btn.style.borderColor = "#2ed573";
+                    btn.style.color = "#2ed573";
+                }
+                if(window.renderTopBar) window.renderTopBar(); // إعادة التحديث لتشغيل الدراج دروب
+            } else if (pass !== null) {
+                alert("كلمة المرور خاطئة!");
+            }
+        } else {
+            window.isEditMode = false;
+            alert("تم إيقاف وضع التعديل والنقل.");
+            if(btn) {
+                btn.style.borderColor = "#f1c40f";
+                btn.style.color = "#f1c40f";
+            }
+            if(window.renderTopBar) window.renderTopBar(); // العودة للوضع الطبيعي
+        }
     }
 
     function addNewFolder() {
@@ -1111,13 +1233,30 @@
             return;
         }
 
-        urls.forEach(function(url) {
-            var nextNum = window.db.topBarChannels.length + 1;
-            window.db.topBarChannels.push({
-                name: String(nextNum),
-                url: url.trim()
+        var atBeginning = confirm("هل تريد إضافة هذه القنوات في بداية الشريط لتظهر أولاً؟\n(موافق = في البداية ، إلغاء = في النهاية)");
+
+        if (atBeginning) {
+            // إضافة في البداية
+            urls.reverse().forEach(function(url) {
+                // محاولة استخراج اسم القناة من الرابط (من ch=)
+                var nameMatch = url.match(/ch=([^&]+)/);
+                var chName = nameMatch ? nameMatch[1] : String(window.db.topBarChannels.length + 1);
+                window.db.topBarChannels.unshift({
+                    name: chName,
+                    url: url.trim()
+                });
             });
-        });
+        } else {
+            // إضافة في النهاية
+            urls.forEach(function(url) {
+                var nameMatch = url.match(/ch=([^&]+)/);
+                var chName = nameMatch ? nameMatch[1] : String(window.db.topBarChannels.length + 1);
+                window.db.topBarChannels.push({
+                    name: chName,
+                    url: url.trim()
+                });
+            });
+        }
 
         if (window.saveDB) window.saveDB();
         if (window.renderTopBar) window.renderTopBar();
