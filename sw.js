@@ -1,11 +1,11 @@
-const CACHE_NAME = 'pwa-cache-v1782532795498';
-const urlsToCache = [ './', './index.html?v=v1782532795498', './offline.html?v=v1782532795498', './icon-192.png?v=v1782532795498', './icon-512.png?v=v1782532795498', './manifest.json?v=v1782532795498' ];
+const CACHE_NAME = 'pwa-cache-8457259411782806650673';
+const urlsToCache = [ './', './index.html', './offline.html', './icon-192.png', './icon-512.png', './manifest.json' ];
 
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache))
   );
-  self.skipWaiting();
+  self.skipWaiting(); // لتشغيل الإصدار الجديد فوراً
 });
 
 self.addEventListener('activate', event => {
@@ -20,18 +20,31 @@ self.addEventListener('activate', event => {
       );
     })
   );
-  self.clients.claim();
+  self.clients.claim(); // للسيطرة على الصفحات المفتوحة بالنسخة الجديدة فوراً
 });
 
 self.addEventListener('fetch', event => {
-  event.respondWith(
-    caches.match(event.request)
-      .then(response => {
-        return response || fetch(event.request).catch(() => {
-          if (event.request.mode === 'navigate') {
-            return caches.match('./offline.html?v=v1782532795498');
-          }
-        });
-      })
-  );
+  // استراتيجية شبكة أولاً (Network-First) لصفحة التنقل لتعمل التحديثات فوراً عند وجود نت
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
+        .then(networkResponse => {
+          return caches.open(CACHE_NAME).then(cache => {
+            cache.put(event.request, networkResponse.clone());
+            return networkResponse;
+          });
+        })
+        .catch(() => {
+          return caches.match(event.request) || caches.match('./index.html') || caches.match('./offline.html');
+        })
+    );
+  } else {
+    // باقي الملفات كاش أولاً لسرعة التصفح وتوفير البيانات
+    event.respondWith(
+      caches.match(event.request)
+        .then(response => {
+          return response || fetch(event.request);
+        })
+    );
+  }
 });
